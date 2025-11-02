@@ -1,111 +1,182 @@
+// services/geminiService.ts
+// Compatible with @google/genai/web packages that export either GoogleGenAI or GoogleGenerativeAI.
 
-import { GoogleGenAI, GenerateContentResponse, Type } from "@google/genai";
-import { Flashcard } from '../types';
+/// <reference types="vite/client" />
+import * as GenAI from "@google/genai/web";
 
-if (!process.env.API_KEY) {
-  throw new Error("API_KEY environment variable is not set");
+// --- ENV ---
+const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+if (!apiKey) {
+  throw new Error("VITE_GEMINI_API_KEY environment variable is not set");
 }
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+// --- Client bootstrap (handle both export names) ---
+const GoogleClient: any =
+  // newer / some builds
+  (GenAI as any).GoogleGenerativeAI ||
+  // older / other builds
+  (GenAI as any).GoogleGenAI;
 
-const flashcardSchema = {
-  type: Type.ARRAY,
-  items: {
-    type: Type.OBJECT,
-    properties: {
-      question: {
-        type: Type.STRING,
-        description: 'The question or front side of the flashcard.'
-      },
-      answer: {
-        type: Type.STRING,
-        description: 'The answer or back side of the flashcard.'
-      }
-    },
-    required: ['question', 'answer']
+if (!GoogleClient) {
+  throw new Error(
+    "Could not find GoogleGenerativeAI or GoogleGenAI in '@google/genai/web'. " +
+    "Open node_modules/@google/genai/web/index.d.ts to see the correct export name."
+  );
+}
+
+const client = new GoogleClient({ apiKey });
+
+// --- Helpers ---
+function getModel(name = "gemini-2.5-flash") {
+  // Newer SDKs: has getGenerativeModel()
+  if (typeof (client as any).getGenerativeModel === "function") {
+    return (client as any).getGenerativeModel({ model: name });
   }
-};
 
+  // Older SDKs: expose models.generateContent()
+  if ((client as any).models?.generateContent) {
+    return {
+      async generateContent(prompt: string) {
+        // old SDK wants { model, contents: prompt }
+        return await (client as any).models.generateContent({
+          model: name,
+          contents: prompt,
+        });
+      },
+    };
+  }
+
+  throw new Error("Your @google/genai version has an unexpected API shape.");
+}
+
+
+async function toText(res: any): Promise<string> {
+  // Some builds return response.text(), others response.text
+  const t = res?.response?.text;
+  if (typeof t === "function") return t.call(res.response);
+  if (typeof t === "string") return t;
+
+  // Fallback to candidates schema
+  const c = res?.response?.candidates?.[0];
+  const parts = c?.content?.parts;
+  if (Array.isArray(parts)) {
+    const txt = parts.map((p: any) => p?.text).filter(Boolean).join("\n");
+    if (txt) return txt;
+  }
+  return "";
+}
+
+// --- Optional quick sanity ping (use from App if you want) ---
+export async function pingGemini() {
+  const res = await getModel().generateContent("Say 'ready' if you can hear me.");
+  const text = await toText(res);
+  return text || "(no text)";
+}
+
+// --- Service used by App.tsx ---
 export const geminiService = {
-  askQuestion: async (
+  async askQuestion(
     question: string,
     sourceContent: string,
     useThinkingMode: boolean
-  ): Promise<string> => {
+  ): Promise<string> {
     try {
-      const model = useThinkingMode ? "gemini-2.5-pro" : "gemini-2.5-flash";
-      const config = useThinkingMode ? { thinkingConfig: { thinkingBudget: 32768 } } : {};
-      
-      const prompt = `Based on the following source material, answer the user's question.
-      
-      --- SOURCE MATERIAL ---
-      ${sourceContent}
-      --- END SOURCE MATERIAL ---
-      
-      USER QUESTION: ${question}`;
 
-      const response: GenerateContentResponse = await ai.models.generateContent({
-        model,
-        contents: prompt,
-        ... (useThinkingMode && { config })
-      });
-      
-      return response.text;
-    } catch (error) {
-      console.error("Error asking question:", error);
+      // 🔍 quick debug line – remove later
+      console.log("Using API key prefix:", apiKey?.slice(0, 6) || "none");
+
+      const modelName = useThinkingMode ? "gemini-2.5-pro" : "gemini-2.5-flash";
+
+      const systemHint = useThinkingMode
+        ? "Think step by step, state key assumptions, then answer concisely."
+        : "Answer concisely and clearly.";
+
+      const prompt = [
+        systemHint,
+        "Use the SOURCE when relevant. If the SOURCE lacks the answer, say so briefly.",
+        "",
+        "--- SOURCE ---",
+        sourceContent,
+        "--- END SOURCE ---",
+        "",
+        `QUESTION: ${question}`,
+      ].join("\n");
+
+      const res = await getModel(modelName).generateContent(prompt);
+      const text = await toText(res);
+      return text || "I couldn’t produce an answer.";
+    } catch (err) {
+      console.error("askQuestion error:", err);
       return "Sorry, I encountered an error while processing your question.";
     }
   },
 
-  generateReport: async (sourceContent: string): Promise<string> => {
+  async generateReport(sourceContent: string): Promise<string> {
     try {
-      const prompt = `Analyze the following source material and generate a comprehensive, well-structured report summarizing the key points, themes, and conclusions.
-      
-      --- SOURCE MATERIAL ---
-      ${sourceContent}
-      --- END SOURCE MATERIAL ---`;
-      
-      const response: GenerateContentResponse = await ai.models.generateContent({
-        model: "gemini-2.5-pro",
-        contents: prompt
-      });
+      const prompt = [
+        "Create a crisp, well-structured report with short sections:",
+        "- Key ideas",
+        "- Evidence",
+        "- Uncertainties / open questions",
+        "End with 3 actionable next steps.",
+        "",
+        "--- SOURCE ---",
+        sourceContent,
+        "--- END SOURCE ---",
+      ].join("\n");
 
-      return response.text;
-    } catch (error) {
-      console.error("Error generating report:", error);
+      const res = await getModel("gemini-2.5-pro").generateContent(prompt);
+      const text = await toText(res);
+      return text || "No report text returned.";
+    } catch (err) {
+      console.error("generateReport error:", err);
       return "Sorry, I encountered an error while generating the report.";
     }
   },
 
-  generateFlashcards: async (sourceContent: string): Promise<Flashcard[]> => {
+  async generateFlashcards(sourceContent: string) {
     try {
-      const prompt = `Analyze the following source material and generate a set of flashcards covering the key concepts, definitions, and facts.
-      
-      --- SOURCE MATERIAL ---
-      ${sourceContent}
-      --- END SOURCE MATERIAL ---`;
+      // Keep it simple: ask for strict JSON and parse it
+      const prompt = [
+        "From the SOURCE, produce 8–12 flashcards as pure JSON (no prose):",
+        `[
+  {"question":"...", "answer":"..."},
+  {"question":"...", "answer":"..."}
+]`,
+        "Short Q/A, one idea per card. No markdown, only JSON.",
+        "",
+        "--- SOURCE ---",
+        sourceContent,
+        "--- END SOURCE ---",
+      ].join("\n");
 
-      const response: GenerateContentResponse = await ai.models.generateContent({
-        model: "gemini-2.5-flash",
-        contents: prompt,
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: flashcardSchema,
+      const res = await getModel("gemini-2.5-flash").generateContent(prompt);
+      const text = (await toText(res)).trim();
+
+      // Parse best-effort: exact JSON or extract first JSON array
+      let arr: any[] | null = null;
+      try {
+        const parsed = JSON.parse(text);
+        if (Array.isArray(parsed)) arr = parsed;
+      } catch {
+        const m = text.match(/\[[\s\S]*\]/);
+        if (m) {
+          try {
+            const parsed = JSON.parse(m[0]);
+            if (Array.isArray(parsed)) arr = parsed;
+          } catch { }
         }
-      });
-      
-      const jsonText = response.text.trim();
-      const parsedFlashcards = JSON.parse(jsonText);
-      
-      const flashcardsWithIds: Flashcard[] = parsedFlashcards.map((card: any, index: number) => ({
-        ...card,
-        id: `flashcard-${Date.now()}-${index}`
+      }
+
+      const cards = (arr || []).map((card, i) => ({
+        id: `flashcard-${Date.now()}-${i}`,
+        question: String(card?.question ?? "").trim(),
+        answer: String(card?.answer ?? "").trim(),
       }));
 
-      return flashcardsWithIds;
-
-    } catch (error) {
-      console.error("Error generating flashcards:", error);
+      return cards.length ? cards : [{ id: `flashcard-${Date.now()}-0`, question: "Summary", answer: text.slice(0, 1000) }];
+    } catch (err) {
+      console.error("generateFlashcards error:", err);
       return [];
     }
   },

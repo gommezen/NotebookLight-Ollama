@@ -13,26 +13,25 @@ const FlashcardItem: React.FC<{ card: Flashcard }> = ({ card }) => {
     if (isFlipped) {
       const timer = setTimeout(() => {
         setIsVisible(false);
-      }, 3000); // Card disappears after 3 seconds
+      }, 6000); // Card disappears after 6 seconds
       return () => clearTimeout(timer);
     }
   }, [isFlipped]);
 
   const handleFlip = () => {
     if (!isFlipped) { // Prevent flipping back and re-triggering the timer
-        setIsFlipped(true);
+      setIsFlipped(true);
     }
   };
 
   return (
-    <div 
+    <div
       className={`perspective-1000 transition-all duration-500 ease-in-out ${!isVisible ? 'opacity-0 scale-95 pointer-events-none' : 'opacity-100 scale-100'}`}
       onClick={handleFlip}
     >
       <div
-        className={`relative w-full h-64 transform-style-3d transition-transform duration-500 ${
-          isFlipped ? 'rotate-y-180' : ''
-        }`}
+        className={`relative w-full h-64 transform-style-3d transition-transform duration-500 ${isFlipped ? 'rotate-y-180' : ''
+          }`}
       >
         <div className="absolute w-full h-full backface-hidden bg-gray-700 rounded-lg p-6 flex items-center justify-center text-center">
           <div>
@@ -41,7 +40,7 @@ const FlashcardItem: React.FC<{ card: Flashcard }> = ({ card }) => {
           </div>
         </div>
         <div className="absolute w-full h-full backface-hidden bg-blue-600 rounded-lg p-6 flex items-center justify-center text-center rotate-y-180">
-           <div>
+          <div>
             <p className="text-sm text-blue-200 mb-2">ANSWER</p>
             <p className="text-xl">{card.answer}</p>
           </div>
