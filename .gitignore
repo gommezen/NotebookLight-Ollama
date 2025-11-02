@@ -22,3 +22,10 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Environment files (API keys, local settings)
+.env
+.env.local
+
+# Ollama and runtime cache
+ollama/
